@@ -41,6 +41,14 @@
     4) Итог по корпусу: среднее значение по всем разным парам и доля
        пар, у которых значение выше 0.
 
+НАПРАВЛЕНИЕ ОКНА
+    Окно идёт только ВПЕРЁД: для каждого слова x учитываются слова,
+    стоящие справа от него (не дальше w позиций и не за концом предложения).
+    Пара упорядочена: («социальный», «неравенство») и
+    («неравенство», «социальный») — разные пары. Слева от слова соседи
+    не ищутся. Так же описано в диссертации: «слова на дистанции пяти
+    позиций справа от токена».
+
 ЧТО ТАКОЕ v И ЗАЧЕМ ОНО НУЖНО
     Окно не может выйти за границу предложения. У последнего слова
     предложения справа нет соседей, у предпоследнего при окне 5 — только
@@ -140,21 +148,23 @@ class PMICalculator:
     Считает PMI и Modified PMI для всех пар слов корпуса.
 
     window_size — размер окна (сколько слов справа учитывать);
-    direction   — "forward": только слова справа, пара упорядочена;
-                  "sym": слова с обеих сторон, порядок в паре не важен;
     min_cooc    — пары, встретившиеся реже, в таблицу не попадают.
+
+    Окно идёт только вперёд: учитываются слова справа от x, пара
+    упорядочена — (x, y) и (y, x) считаются разными парами.
     """
 
-    def __init__(self, window_size: int = 5, direction: str = "forward",
-                 min_cooc: int = 1):
+    def __init__(
+            self, window_size: int = 5,
+            min_cooc: int = 1
+    ):
         self.window_size = window_size
-        self.direction = direction
         self.min_cooc = min_cooc
 
         self.N_tokens = 0  # N
         self.total_window_positions = 0  # сколько соседей реально учтено
-        self.f_token = Counter()  # f(x)
-        self.f_pair = Counter()  # f(x, y)
+        self.token_freq = Counter()  # f(x)
+        self.pair_freq = Counter()  # f(x, y)
 
     # ---------- подготовка текста ----------
 
@@ -169,58 +179,118 @@ class PMICalculator:
     def _text_to_sentences(self, text: str) -> list:
         """Текст → список предложений, каждое — список лемм."""
         sentences = []
+        # sentenize режет текст на предложения.
+        # Каждое sent — объект, у которого есть текст предложения (sent.text).
         for sent in sentenize(text):
             lemmas = []
-            for tok in tokenize(sent.text):
-                lemma = self._normalize_token(tok.text)
+            # tokenize режет предложение на токены: слова, знаки препинания,
+            # числа. tok.text — текст одного токена.
+            for token in tokenize(sent.text):
+                # Токен → лемма. Метод вернёт None, если в токене нет букв
+                # (запятая, точка, число): такие токены нам не нужны.
+                lemma = self._normalize_token(token.text)
                 if lemma:
                     lemmas.append(lemma)
             if lemmas:
                 sentences.append(lemmas)
+
+        # Возвращаем список списков, например:
+        # [["социальный", "неравенство", "расти"], ["доверие", "падать"]]
         return sentences
 
     # ---------- подсчёт частот ----------
 
     def fit(self, texts):
         """Проходит по корпусу и считает N, f(x), f(x, y)."""
-        self.N_tokens = 0
-        self.total_window_positions = 0
-        self.f_token.clear()
-        self.f_pair.clear()
+
+        # Обнуляем всё: если fit вызвать повторно, старые числа не должны
+        # складываться с новыми
+        self.N_tokens = 0  # N: сколько всего слов в корпусе
+        self.total_window_positions = 0  # сколько пар позиций учтено (нужно для v)
+        self.token_freq.clear()  # f(x): частоты слов
+        self.pair_freq.clear()  # f(x, y): частоты пар
         window_size = self.window_size
 
         for text in texts:
+            # seq — одно предложение: список лемм
             for seq in self._text_to_sentences(text):
                 seq_len = len(seq)
+
+                # Частоты слов:
+                # +1 к каждой лемме предложения
                 for w in seq:
-                    self.f_token[w] += 1
+                    self.token_freq[w] += 1
+
+                # Общее число слов корпуса растёт
+                # на длину предложения
                 self.N_tokens += seq_len
 
-                if self.direction == "forward":
-                    for x_index, x_token in enumerate(seq):
-                        start = x_index + 1
-                        # окно не выходит за конец предложения
-                        end = min(seq_len, x_index + 1 + window_size)
-                        self.total_window_positions += (end - start)
-                        for y_index in range(start, end):
-                            self.f_pair[(x_token, seq[y_index])] += 1
+                # ПРИМЕР, который держим в голове (окно window_size = 2):
+                #     seq = ["социальный", "неравенство", "снижать", "доверие"]
+                #     номера:     0              1            2          3
+                # seq_len = 4 (в предложении 4 слова)
 
-                elif self.direction == "sym":
-                    for x_index, x_token in enumerate(seq):
-                        left = max(0, x_index - window_size)
-                        right = min(seq_len, x_index + window_size + 1)
-                        self.total_window_positions += (
-                                (x_index - left) + (right - x_index - 1))
-                        # берём только соседей справа, чтобы не посчитать
-                        # одну и ту же пару дважды
-                        for y_index in range(x_index + 1, right):
-                            y_token = seq[y_index]
-                            pair = ((x_token, y_token) if x_token <= y_token
-                                    else (y_token, x_token))
-                            self.f_pair[pair] += 1
-                else:
-                    raise ValueError(
-                        'direction должно быть "forward" или "sym"')
+                # Окно идёт только ВПЕРЁД: для каждого слова
+                # ищем соседей только СПРАВА от него.
+
+                for x_index, x_token in enumerate(seq):
+                    # enumerate выдаёт слова вместе с их номерами.
+                    # Цикл по словам предложения, по одному. Слово, для которого
+                    # мы сейчас ищем соседей, называем x.
+                    #   x_index — номер этого слова (0, 1, 2, 3),
+                    #   x_token — само слово.
+                    # Первый круг: x_index = 0, x_token = "социальный".
+                    # Второй круг: x_index = 1, x_token = "неравенство", и так далее.
+
+                    start = x_index + 1
+                    # start — номер первого соседа справа.
+                    # Для «социальный» (номер 0): start = 1, то есть «неравенство».
+
+                    end = min(seq_len, x_index + 1 + window_size)
+                    # end — номер, НА КОТОРОМ мы останавливаемся (сам он уже НЕ берётся).
+                    # Окно длиной window_size начинается с start, поэтому «конец окна»
+                    # равен start + window_size, то есть x_index + 1 + window_size.
+
+                    # Но предложение может закончиться раньше. Поэтому берём меньшее
+                    # из двух чисел: min(длина предложения, конец окна).
+                    # Для «социальный» (номер 0): min(4, 0+1+2) = min(4, 3) = 3,
+                    #   значит соседи — номера 1 и 2 (номер 3 уже не берём).
+                    # Для «снижать» (номер 2): min(4, 2+1+2) = min(4, 5) = 4,
+                    #   окно «хотело» дойти до 5, но предложение кончается на 3,
+                    #   поэтому берём только номер 3.
+                    # Для «доверие» (номер 3): min(4, 6) = 4, а start = 4. Соседей нет.
+
+                    self.total_window_positions += (end - start)
+                    # end - start — сколько соседей у слова x получилось на самом деле.
+                    # «социальный»: 3 - 1 = 2 соседа
+                    # «неравенство»: 4 - 2 = 2 соседа
+                    # «снижать»:    4 - 3 = 1 сосед
+                    # «доверие»:    4 - 4 = 0 соседей
+                    # Здесь мы только копим СУММУ соседей по всему корпусу.
+                    # Среднее число соседей на одно слово (v) считается позже, в методе
+                    # avg_window: сумма соседей делится на число слов корпуса (N_tokens).
+
+                    # Идём по номерам соседей справа: от start до end - 1.
+                    for y_index in range(start, end):
+                        # range(1, 3) даёт номера 1 и 2. Число 3 в него НЕ входит.
+                        # Слово y — это сосед, с которым x образует пару.
+                        self.pair_freq[(x_token, seq[y_index])] += 1
+                        # seq[y_index] — слово с номером y_index (сосед y).
+                        # (x_token, seq[y_index]) — пара слов: сначала x, потом y.
+                        #   Порядок важен: пара («социальный», «неравенство»)
+                        #   и пара («неравенство», «социальный») считаются разными.
+                        # pair_freq — счётчик пар. «+= 1» значит: эта пара встретилась
+                        #   ещё раз. Если пары в счётчике ещё не было, она появится
+                        #   со значением 1.
+                        #
+                        # Что запишется для нашего примера:
+                        #   x = «социальный»  → («социальный», «неравенство»)  +1
+                        #                       («социальный», «снижать»)      +1
+                        #   x = «неравенство» → («неравенство», «снижать»)     +1
+                        #                       («неравенство», «доверие»)     +1
+                        #   x = «снижать»     → («снижать», «доверие»)         +1
+                        #   x = «доверие»     → ничего (справа никого нет)
+
         return self
 
     # ---------- формула ----------
@@ -255,11 +325,11 @@ class PMICalculator:
         Отсортирована по убыванию Modified PMI.
         """
         rows = []
-        for (x_token, y_token), f_xy in self.f_pair.items():
+        for (x_token, y_token), f_xy in self.pair_freq.items():
             if f_xy < self.min_cooc:
                 continue
-            f_x = self.f_token[x_token]
-            f_y = self.f_token[y_token]
+            f_x = self.token_freq[x_token]
+            f_y = self.token_freq[y_token]
             pmi = self.pmi(f_xy, f_x, f_y)
             rows.append({
                 "x": x_token, "y": y_token,
@@ -294,10 +364,8 @@ class PMICalculator:
         x = self._normalize_token(x_word)
         y = self._normalize_token(y_word)
         key = (x, y)
-        if self.direction == "sym" and x is not None and y is not None:
-            key = (x, y) if x <= y else (y, x)
-        f_x, f_y = self.f_token.get(x, 0), self.f_token.get(y, 0)
-        f_xy = self.f_pair.get(key, 0)
+        f_x, f_y = self.token_freq.get(x, 0), self.token_freq.get(y, 0)
+        f_xy = self.pair_freq.get(key, 0)
         N, v = self.N_tokens, self.avg_window()
 
         print(f"\nРАЗБОР ПАРЫ: {x_word} + {y_word}  (леммы: {x} + {y})")
@@ -339,8 +407,6 @@ if __name__ == "__main__":
                         help="размер окна (по умолчанию 5)")
     parser.add_argument("--min-cooc", type=int, default=1,
                         help="минимальная совместная встречаемость")
-    parser.add_argument("--direction", choices=["forward", "sym"],
-                        default="forward")
     parser.add_argument("--demo", action="store_true",
                         help="считать на мини-корпусе из трёх предложений")
     parser.add_argument("--pair", nargs=2, metavar=("X", "Y"),
@@ -350,7 +416,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.demo:
-        texts, source = DEMO_CORPUS, "мини-корпус из трёх предложений"
+        texts, source = DEMO_CORPUS, "Мини-корпус из трёх предложений"
     else:
         files = list_text_files(args.folder)
         if not files:
@@ -362,11 +428,11 @@ if __name__ == "__main__":
     if args.demo:
         print(f"\nТекст: {DEMO_CORPUS[0]}")
 
-    calc = PMICalculator(args.window, args.direction, args.min_cooc)
+    calc = PMICalculator(window_size=args.window, min_cooc=args.min_cooc)
     calc.fit(texts)
     rows = calc.compute_scores()
 
-    print(f"\nОкно: {args.window}, направление: {args.direction}, "
+    print(f"\nОкно: {args.window}, направление: вперёд (справа от слова), "
           f"минимальная совместная встречаемость: {args.min_cooc}")
     print(f"Токенов в корпусе (N):               {calc.N_tokens}")
     print(f"Среднее число соседей на токен (v):  {calc.avg_window():.3f}"

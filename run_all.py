@@ -118,6 +118,32 @@ def print_table(rows: list):
             for (key, _), w in zip(COLUMNS, widths)))
 
 
+def print_pmi_summary(pmi_summary: list):
+    """
+    Печатает итог по PMI таблицей: показатели в строках, окна в столбцах.
+    """
+    # (подпись строки, ключ в словаре, это доля?)
+    lines = [
+        ("Среднее PMI", "avg_pmi", False),
+        ("Доля пар с PMI > 0", "share_pmi", True),
+        ("Среднее Modified PMI", "avg_mod", False),
+        ("Доля пар с Modified PMI > 0", "share_mod", True),
+    ]
+    label_width = max(len(label) for label, _, _ in lines) + 2
+    col_width = 11
+
+    header = "".join(f"{'окно ' + str(item['window']):>{col_width}}"
+                     for item in pmi_summary)
+    print(f"   {'':<{label_width}}{header}")
+    print("   " + "-" * (label_width + col_width * len(pmi_summary)))
+    for label, key, is_share in lines:
+        cells = "".join(
+            f"{item[key] * 100:.2f} %".rjust(col_width) if is_share
+            else f"{item[key]:.2f}".rjust(col_width)
+            for item in pmi_summary)
+        print(f"   {label:<{label_width}}{cells}")
+
+
 def save_csv(rows: list, folder: str) -> str:
     name = os.path.basename(os.path.normpath(folder))
     path = f"results_{name}.csv"
@@ -143,10 +169,6 @@ if __name__ == "__main__":
         print_table(rows)
 
         print("\nPMI ПО ВСЕЙ ПАПКЕ (минимальная совместная встречаемость 1)")
-        for item in pmi_summary:
-            print(f"   окно {item['window']}: "
-                  f"среднее PMI {item['avg_pmi']:.2f}, "
-                  f"доля пар с PMI > 0: {item['share_pmi'] * 100:.0f} %; "
-                  f"среднее Modified PMI {item['avg_mod']:.2f}")
+        print_pmi_summary(pmi_summary)
 
         print(f"\nТаблица сохранена в файл {save_csv(rows, folder)}")
