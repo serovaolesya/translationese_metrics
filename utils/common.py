@@ -23,7 +23,7 @@ import os
 import re
 import sys
 import warnings
-from collections import defaultdict
+from collections import defaultdict, namedtuple
 from functools import lru_cache
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data import conjunctions, prepositions, particles, pronouns
 from data.nltk_stopwords_ru import nltk_stopwords_ru
 from data.sentence_abbreviations import SENTENCE_ABBREVIATIONS
+from data.yo_words import YO_WORDS
 
 warnings.filterwarnings("ignore")
 
@@ -63,12 +64,42 @@ def _load_morph():
 morph, MORPH_NAME = _load_morph()
 
 
+# Разбор слова в том виде, в каком его используют метрики:
+#   word        — слово, normal_form — лемма (оба без «ё»),
+#   tag         — морфологические признаки (tag.POS — часть речи),
+#   score       — уверенность анализатора в этом разборе.
+ParsedWord = namedtuple("ParsedWord", "word normal_form tag score")
+
+
+def replace_yo(text: str) -> str:
+    """Заменяет «ё» на «е» (и «Ё» на «Е»)."""
+    return text.replace("ё", "е").replace("Ё", "Е")
+
+
+# Исключения: лемма без «ё» -> лемма с «ё» («елка» -> «ёлка»).
+# Список слов лежит в data/yo_words.py.
+_YO_RESTORE = {replace_yo(word): word for word in YO_WORDS}
+
+
 @lru_cache(maxsize=200_000)
 def parse_cached(token: str):
     """Возвращает первый (самый вероятный) разбор слова.
-    Результат запоминается, чтобы не разбирать одно слово дважды."""
+    Результат запоминается, чтобы не разбирать одно слово дважды.
+
+    Даже если слово подано без «ё», pymorphy возвращает лемму с «ё»
+    («еще» -> «ещё», «ребенок» -> «ребёнок»). Поэтому «ё» в слове и
+    в лемме заменяем на «е» уже здесь: все метрики берут леммы отсюда.
+    Исключение — слова из data/yo_words.py: у них «ё» в лемме
+    сохраняется («елка» -> «ёлка»)."""
     token = token.strip()
-    return morph.parse(token)[0]
+    parsed = morph.parse(token)[0]
+    lemma = replace_yo(parsed.normal_form)
+    return ParsedWord(
+        word=replace_yo(parsed.word),
+        normal_form=_YO_RESTORE.get(lemma, lemma),
+        tag=parsed.tag,
+        score=parsed.score,
+    )
 
 
 # ──────────────────────────────────────────────────────────────
@@ -88,7 +119,9 @@ def read_text(path: str) -> str:
 
 def fix_spacing(text: str) -> str:
     """Убирает переносы строк и лишние пробелы, расставляет пробелы
-    после знаков препинания."""
+    после знаков препинания. Заменяет «ё» на «е»."""
+    # «ё» -> «е»: во всех дальнейших шагах в тексте только «е»
+    text = replace_yo(text)
     # Переносы строк заменяем одним пробелом
     text = re.sub(r'\n+', ' ', text)
     # "слово.Слово" превращаем в "слово. Слово"

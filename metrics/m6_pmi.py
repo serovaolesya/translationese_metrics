@@ -360,30 +360,45 @@ class PMICalculator:
     # ---------- разбор одной пары ----------
 
     def explain_pair(self, x_word: str, y_word: str):
-        """Печатает расчёт PMI для пары слов по шагам."""
+        """Печатает расчёт PMI для пары слов: частоты и подстановку в формулу."""
         x = self._normalize_token(x_word)
         y = self._normalize_token(y_word)
-        key = (x, y)
         f_x, f_y = self.token_freq.get(x, 0), self.token_freq.get(y, 0)
-        f_xy = self.pair_freq.get(key, 0)
+        f_xy = self.pair_freq.get((x, y), 0)
         N, v = self.N_tokens, self.avg_window()
+        use_v = self.window_size > 1 and v > 0
+        where = ("сразу после" if self.window_size == 1
+                 else f"в пределах {self.window_size} слов после")
 
         print(f"\nРАЗБОР ПАРЫ: {x_word} + {y_word}  (леммы: {x} + {y})")
-        print(f"   N = {N}, f(x) = {f_x}, f(y) = {f_y}, f(x, y) = {f_xy}")
-        if f_xy == 0:
-            print("   Пара в корпусе не встретилась — PMI не определён.")
-            return
-        use_v = self.window_size > 1 and v > 0
-        expected = f_x * f_y / N * (v if use_v else 1)
-        print(f"   Ожидаемое число совпадений при независимости: "
-              f"{f_x} × {f_y} / {N}"
-              + (f" × {v:.3f}" if use_v else "") + f" = {expected:.3f}")
-        print(f"   Реальное число больше ожидаемого в "
-              f"{f_xy / expected:.2f} раза")
-        pmi = self.pmi(f_xy, f_x, f_y)
-        print(f"   PMI = log2({f_xy / expected:.2f}) = {pmi:.3f}")
-        print(f"   Modified PMI = {f_xy} × {pmi:.3f} = {f_xy * pmi:.3f}")
 
+        print("\nЧто посчитано в корпусе")
+        print(f"   N = {N:<9} всего слов в корпусе")
+        print(f"   f(x) = {f_x:<6} сколько раз встретилось слово «{x}»")
+        print(f"   f(y) = {f_y:<6} сколько раз встретилось слово «{y}»")
+        print(f"   f(x, y) = {f_xy:<3} сколько раз «{y}» стояло {where} «{x}»")
+        if use_v:
+            print(f"   v = {v:<9.3f} среднее число соседних слов, "
+                  f"учтённых для одного слова")
+        if f_xy == 0:
+            print("\n   Пара в корпусе не встретилась — PMI не определён.")
+            return
+
+        pmi = self.pmi(f_xy, f_x, f_y)
+        print("\nПодставляем в формулу PMI")
+        if use_v:
+            inner = (N * f_xy) / (f_x * f_y * v)
+            print("   PMI = log2( N × f(x, y) / (f(x) × f(y) × v) )")
+            print(f"       = log2( {N} × {f_xy} / ({f_x} × {f_y} × {v:.3f}) )")
+        else:
+            inner = (N * f_xy) / (f_x * f_y)
+            print("   PMI = log2( N × f(x, y) / (f(x) × f(y)) )")
+            print(f"       = log2( {N} × {f_xy} / ({f_x} × {f_y}) )")
+        print(f"       = log2( {inner:.2f} ) = {pmi:.3f}")
+
+        print("\nПодставляем в формулу Modified PMI")
+        print("   Modified PMI = f(x, y) × PMI")
+        print(f"                = {f_xy} × {pmi:.3f} = {f_xy * pmi:.3f}")
 
 def print_rows(rows: list, top_n: int = 15):
     print(f"   {'x':<18}{'y':<18}{'f(x,y)':>7}{'f(x)':>7}{'f(y)':>7}"
